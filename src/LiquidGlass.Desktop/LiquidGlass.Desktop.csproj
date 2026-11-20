@@ -1,0 +1,59 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>latest</LangVersion>
+    <!--
+      UseWindowsForms 只是为了拿到 System.Drawing（GDI+）：设置面板、启动台要用
+      抗锯齿圆角、渐变和中文排版，GDI 画不出来。这里不跑 WinForms 的消息循环，
+      只是引用程序集，Dock 仍然走自己的 Win32 循环。
+    -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>LiquidGlass.Desktop</AssemblyName>
+    <RootNamespace>LiquidGlass.Desktop</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!--
+      应用图标：不设这个，exe 就用 .NET 的通用空白图标 —— 桌面快捷方式、
+      任务管理器、Alt+Tab 里全是那个白板，看着不像正经软件。
+      图形由 _artifacts/make_app_icon.py 生成（圆角方形底板 + 三颗圆点；
+      加参数 shape=pill 可以切回横向药丸造型）。
+    -->
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+    <PackageReference Include="Vortice.DXGI" Version="3.8.3" />
+    <PackageReference Include="Vortice.D3DCompiler" Version="3.8.3" />
+    <PackageReference Include="Vortice.DirectComposition" Version="3.8.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 着色器在运行时从磁盘读取，必须同时进 build 与 publish 目录 -->
+    <None Update="Shaders\*.hlsl"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!--
+    发布相关开关。SelfContained / RuntimeIdentifier 只在 publish 时由命令行传入，
+    避免日常 dotnet build 也走 RID 特定输出（会让调试构建变重）。
+    不开 PublishTrimmed —— 反射与 COM 互操作在裁剪后会静默失效。
+  -->
+  <PropertyGroup>
+    <PublishSingleFile>true</PublishSingleFile>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <PublishTrimmed>false</PublishTrimmed>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
+</Project>
