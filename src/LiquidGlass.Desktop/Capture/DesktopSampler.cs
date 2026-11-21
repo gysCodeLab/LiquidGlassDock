@@ -892,7 +892,7 @@ internal sealed class DesktopSampler : IDisposable
         if (r.Code == DxgiErrorWaitTimeout)
         {
             MissCount++;
-            ProtectedMasked = false;
+
             return false;
         }
 

@@ -22,6 +22,7 @@ cbuffer GlassParams : register(b0)
                          // w = 整屏环境亮度 0..1（0 = 未提供；大面板的背景压平靠它门控）
     float4 Fx;           // x = edge fade px (0 = hard cut), y = wall thickness weight,
                          // z = bright-wall smoke (0 = plain white glass, 1 = full smoked body)
+    float4 Recovery;
 };
 
 Texture2D Backdrop : register(t0);
@@ -152,6 +153,20 @@ float4 PS_Glass(QuadOut i) : SV_Target
     float radius = min(Shape.x, min(halfSize.x, halfSize.y));
 
     float sd = sdRoundBox(p, halfSize, radius);
+
+    // No desktop sample is displayed while Windows is still unlocking.
+    // The center passes through exactly; only the thin bevel is rendered.
+    if (Recovery.x > 0.5)
+    {
+        float coverage = saturate(0.5 - sd);
+        float depth = max(-sd, 0.0) / max(Extra.y, 0.5);
+        float2 normal = sdRoundBoxGradient(p, halfSize, radius);
+        float bevel = 1.0 - smoothstep(0.25, 2.5, depth);
+        float light = saturate(dot(normal, float2(-0.45, -0.893)));
+        float highlight = 0.25 * light;
+        float shade = 0.15 * (1.0 - light);
+        return float4(highlight.xxx, highlight + shade) * bevel * coverage;
+    }
 
     // ---------- outside: soft drop shadow straight from the SDF ----------
     if (sd > 0.0)
@@ -366,14 +381,14 @@ float4 PS_Glass(QuadOut i) : SV_Target
     float edge=exp(-depth/.80);
     float2 ray=uv+off;
     float3 through=lerp(Backdrop.SampleLevel(LinearClamp,ray,0).rgb,
-                        Aux.SampleLevel(LinearClamp,ray,0).rgb,.72+.17*bevel);
+                        Aux.SampleLevel(LinearClamp,ray,0).rgb,.29+.60*bevel);
     float3 surround=Backdrop.SampleLevel(LinearClamp,uv+n*ScreenMap.zw*22,0).rgb;
     c=Extra.z>.5 ? through : c;
     float lum=lumaOf(c);
     float key=pow(saturate(dot(n,normalize(float2(-.5,-.866)))),2);
     float glint=key*exp(-pow((pos.x+.55)/.49,2))+ .52*(1-key)*exp(-pow((pos.x-.73)/.33,2));
-    float glaze=lerp(.013,.034+.032*(1-pos.y)*.5,bevel);
-    c=c*lerp(.985,.95-.033*saturate(pos.y),bevel) + glaze*(1-lum);
+    float glaze=.034+.032*(1-pos.y)*.5;
+    c=c*(.95-.033*saturate(pos.y)) + glaze*(1-lum);
         float paper=smoothstep(.77,.97,lumaOf(surround));
     c=lerp(c,through*.982+.006,paper*.93);
     c=lerp(c,surround,bevel*.18*borderW);

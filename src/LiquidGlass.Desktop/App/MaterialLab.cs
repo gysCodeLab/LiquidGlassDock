@@ -179,6 +179,7 @@ internal static class MaterialLab
             Time = 0f,
             Icons = new List<IconQuad>(),
             KeepExistingContent = true,
+            DesktopPassthrough = Environment.GetEnvironmentVariable("LGD_LAB_DESKTOP_PASSTHROUGH") == "1",
         };
 
         renderer.Render(req);

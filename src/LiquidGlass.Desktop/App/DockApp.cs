@@ -149,6 +149,7 @@ internal sealed class DockApp : IDisposable
     private bool _sessionLocked;
     /// <summary>&gt; 0 = 到这个时刻重建采集会话（解锁/唤醒后等 DWM 把桌面合成出来）。</summary>
     private double _samplerRebuildAt;
+    private double _desktopPassthroughUntil;
 
     /// <summary>
     /// 冻结帧（锁屏前最后一张真桌面）从解锁/唤醒那刻起最多再撑多久。
@@ -593,16 +594,13 @@ internal sealed class DockApp : IDisposable
 
                 if (_quit) break;
 
-                // 解锁 / 唤醒之后到点重建采集会话。
-                // 延迟这 0.4 秒是必须的：那一刻桌面刚由 DWM 重新合成，
-                // 早抢一帧拿到的往往还没成型（全黑），而桌面随后静止就再也刷不掉。
-                if (_samplerRebuildAt > 0 && _clock.Elapsed.TotalSeconds >= _samplerRebuildAt)
+                if (!_sessionLocked && _samplerRebuildAt > 0 &&
+                    _clock.Elapsed.TotalSeconds >= _samplerRebuildAt)
                 {
                     _samplerRebuildAt = 0;
-                    _sampler?.ForceRegionRebuild();
-                    if (_sampler is not null) _sampler.TryInit();
+                    if (_sampler is { Available: false }) _sampler.TryInit();
                     _dirty = true;
-                    Logger.Info("采集会话已重建: " + (_sampler?.Status ?? "无采样"));
+                    Logger.Info("解锁采集重建: " + (_sampler?.Status ?? "无采样"));
                 }
 
                 // 睡眠中：一帧都不画，也不设任何定时器。
@@ -781,7 +779,8 @@ internal sealed class DockApp : IDisposable
                             if (_sampler.SecondaryChanged || _sampler.MainChanged) _statusPill?.NotifyBackgroundChanged();
 
                             // 阻塞等待本身就充当了节拍，不必再 WaitUntil 睡一次
-                            blockedOnSampler = blockMs > 0;
+                            blockedOnSampler = blockMs > 0 && !_sessionLocked &&
+                                _samplerRebuildAt <= 0 && _sampler.Available;
                         }
 
                         // 空闲期降档到 IdleCap，避免桌面每次重合成都被当成"新内容"。
@@ -1865,7 +1864,8 @@ internal sealed class DockApp : IDisposable
 
         bool got = false;
 
-        if (_sampler is not null)
+        bool captureAllowed = !_sessionLocked && _samplerRebuildAt <= 0;
+        if (captureAllowed && _sampler is not null)
         {
             double tSample = _clock.Elapsed.TotalSeconds;
             got = _sampler.TryUpdate(capX, capY, capW, capH, blockMs);
@@ -1923,8 +1923,23 @@ internal sealed class DockApp : IDisposable
         // 这一步是"蓝灰色板子"和"黑板子"的终结者：过去这里什么都不做，
         // 着色器只能走降级分支画中性灰，叠上玻璃的冷色偏移就是一块静止的蓝灰色；
         // 唤醒后那几秒采到全黑帧时则是一块黑板。现在永远至少有真实壁纸可看。
-        bool live = _sampler is not null && _sampler.IsLive;
+        bool live = captureAllowed && _sampler is not null && _sampler.IsLive;
         double tNow = _clock.Elapsed.TotalSeconds;
+        if (_desktopPassthroughUntil > 0 && tNow >= _desktopPassthroughUntil && captureAllowed)
+        {
+            bool captured = _sampler is { Available: true, HasFrame: true, RegionW: > 0, ProtectedMasked: false };
+            // Dark content is legitimate. After the settling period, an unmasked
+            // acquisition from the new session can be used even if it is black.
+            if (captured && (live || tNow >= _desktopPassthroughUntil + 0.45))
+            {
+                _desktopPassthroughUntil = 0;
+                _backdropLive = true;
+                _backdropFlipAt = 0;
+                if (!LaunchpadHoldsBackdrop) _sampler!.ReleaseFreeze();
+                got = true;
+                Logger.Info("解锁玻璃：有效桌面帧已就绪，恢复 F 材质");
+            }
+        }
 
         // 冻结帧：锁屏/唤醒过渡期就是画"锁屏前那一帧桌面"。
         //
@@ -1938,7 +1953,7 @@ internal sealed class DockApp : IDisposable
         //   2. 采到活的桌面（会话在 + 有帧 + 不是全黑）；
         //   3. 这一帧没有被标记为受保护 —— 解锁淡出那几帧正是受保护/遮罩的，
         //      它们不是黑也不算超时，但画出来就是灰/冷蓝色。
-        if (frozen && !_sessionLocked && !LaunchpadHoldsBackdrop && live && !_sampler!.ProtectedMasked)
+        if (frozen && _desktopPassthroughUntil <= 0 && !_sessionLocked && !LaunchpadHoldsBackdrop && live && !_sampler!.ProtectedMasked)
         {
             _sampler.ReleaseFreeze();
             frozen = false;
@@ -2014,7 +2029,7 @@ internal sealed class DockApp : IDisposable
 
         // 冻结期不抓屏。BitBlt 在这段时间抓到的就是锁屏画面或解锁淡出动画，
         // 喂给玻璃就等于把 Dock 染成灰/冷蓝色 —— 画冻结帧才是对的。
-        bool holding = _sessionLocked || frozen;
+        bool holding = !captureAllowed || frozen || _desktopPassthroughUntil > 0;
 
         if (!_backdropLive && !holding)
         {
@@ -2268,7 +2283,8 @@ internal sealed class DockApp : IDisposable
         // 的那一瞬间，DWM 重合成 + 黑帧探测正好会凑齐条件：hasCapture 为 false，
         // 而 _backdropLive 还在 1.2 秒的迟滞期里没翻过去，于是走了这条空样本分支。
         // 直接不画 —— 交换链里留着上一帧，观感就是"什么都没发生"。
-        if (capSrv is null)
+        bool desktopPassthrough = _sessionLocked || _desktopPassthroughUntil > 0;
+        if (capSrv is null && !desktopPassthrough)
         {
             long nowMs = Environment.TickCount64;
             if (nowMs - _noSrvLogAt >= 1000)
@@ -2356,7 +2372,8 @@ internal sealed class DockApp : IDisposable
         var req = new RenderRequest
         {
             TargetRtv = _comp.Rtv,
-            CaptureSrv = capSrv,
+            DesktopPassthrough = desktopPassthrough,
+            CaptureSrv = desktopPassthrough ? null : capSrv,
             CaptureWidth = srcW,
             CaptureHeight = srcH,
             CaptureOffsetX = _winX - srcX,
@@ -2731,6 +2748,8 @@ internal sealed class DockApp : IDisposable
                         _sampler?.Reset();
                         _sampler?.ArmFreezeTimeout(FreezeTimeoutMs);
                         _samplerRebuildAt = _clock.Elapsed.TotalSeconds + 0.4;
+                        _desktopPassthroughUntil = _samplerRebuildAt + 0.30;
+                        _desktopBoostUntil = _desktopPassthroughUntil;
                         _dirty = true;
                         Logger.Info("系统唤醒：渲染循环恢复，画冻结帧，0.4s 后重建采集会话");
                     }
@@ -2773,6 +2792,8 @@ internal sealed class DockApp : IDisposable
                     _sampler?.Reset();
                     _sampler?.ArmFreezeTimeout(FreezeTimeoutMs);
                     _samplerRebuildAt = _clock.Elapsed.TotalSeconds + 0.4;
+                    _desktopPassthroughUntil = _samplerRebuildAt + 0.30;
+                    _desktopBoostUntil = _desktopPassthroughUntil;
                     // 解锁后 DWM 可能丢掉过合成内容，马上用冻结帧重画一次
                     _dirty = true;
                     Logger.Info("会话解锁：画冻结帧，0.4s 后重建采集，采到活桌面才解冻");

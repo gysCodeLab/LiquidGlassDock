@@ -22,6 +22,7 @@ internal struct GlassParams
     public Vector4 Material2;   // x 暗部散射 y 亮部奶白 z 高光软限 w 边缘镜面
     public Vector4 Transmission; // x 通透度 0=全磨砂 1=最透
     public Vector4 Fx;           // x 边缘羽化像素 y 壁厚权重
+    public Vector4 Recovery;
 }
 
 internal sealed class GlassRenderer : IDisposable
@@ -815,6 +816,7 @@ internal sealed class GlassRenderer : IDisposable
             Transmission = new Vector4(req.Transmission, req.AlphaPull,
                 1f - Math.Clamp(req.BorderCut, 0f, 1f), Math.Clamp(req.EnvLuma, 0f, 1f)),
             Fx = new Vector4(req.EdgeFade, req.WallThickness, req.Smoke, req.Lift),
+            Recovery = new Vector4(req.DesktopPassthrough ? 1f : 0f, 0f, 0f, 0f),
         };
 
         // ---------- 4. 玻璃本体（先把背景铺到目标上，再叠玻璃） ----------
@@ -1023,6 +1025,7 @@ internal struct RenderRequest
     public float BlurStep;
     /// <summary>通透度 0..1：0 = 原磨砂，1 = 最透（会让 DWM 把清晰桌面混进来）</summary>
     public float Transmission;
+    public bool DesktopPassthrough;
 
     /// <summary>
     /// 往不透明方向拉多少（0..1，0 = 完全按 Transmission 算）。
