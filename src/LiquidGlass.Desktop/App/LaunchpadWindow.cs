@@ -88,38 +88,6 @@ internal sealed class LaunchpadWindow : LayeredWindow
     /// <summary>本次打开的时刻（TickCount64）。用来挡住"刚显示就被自己关掉"的那一下。</summary>
     private long _openedAt;
 
-    // Share the Dock material defaults. Diagnostic overrides remain opt-in.
-    // Background flattening and opacity pull made this pane look painted even
-    // when both windows used the same Liquid Glass shader.
-    private static readonly float LaunchBlurK =
-        float.TryParse(Environment.GetEnvironmentVariable("LG_LP_BLUR"),
-            System.Globalization.NumberStyles.Float,
-            System.Globalization.CultureInfo.InvariantCulture, out float k) && k > 0f ? k : 1f;
-
-    private static readonly float LaunchAlphaPull =
-        float.TryParse(Environment.GetEnvironmentVariable("LG_LP_ALPHA"),
-            System.Globalization.NumberStyles.Float,
-            System.Globalization.CultureInfo.InvariantCulture, out float a) && a >= 0f
-            ? MathF.Min(a, 1f) : 0f;
-
-    private static readonly float LaunchBorder =
-        float.TryParse(Environment.GetEnvironmentVariable("LG_LP_BORDER"),
-            System.Globalization.NumberStyles.Float,
-            System.Globalization.CultureInfo.InvariantCulture, out float bw) && bw >= 0f
-            ? MathF.Min(bw, 1f) : 1f;
-
-    private static readonly float LaunchWallThickness =
-        float.TryParse(Environment.GetEnvironmentVariable("LG_LP_WALL"),
-            System.Globalization.NumberStyles.Float,
-            System.Globalization.CultureInfo.InvariantCulture, out float ww) && ww >= 0f
-            ? MathF.Min(ww, 1f) : 0f;
-
-    private static readonly float LaunchLift =
-        float.TryParse(Environment.GetEnvironmentVariable("LG_LP_LIFT"),
-            System.Globalization.NumberStyles.Float,
-            System.Globalization.CultureInfo.InvariantCulture, out float lf) && lf >= 0f
-            ? MathF.Min(lf, 1f) : 0f;
-
     public LaunchpadWindow(float scale) : base("LiquidGlassLaunchpad", scale) { }
 
     public void Toggle()
@@ -466,6 +434,7 @@ internal sealed class LaunchpadWindow : LayeredWindow
     public string? ShaderSource { get; set; }
     public Func<GlassConfig>? GlassConfigProvider { get; set; }
     public Func<float>? TransmissionProvider { get; set; }
+    public Func<(float Height, float Radius)>? DockGeometryProvider { get; set; }
 
     /// <summary>
     /// 玻璃卡片的矩形（窗口坐标，设备像素）。窗口铺满整屏是为了"点空白关掉"，
@@ -784,12 +753,9 @@ internal sealed class LaunchpadWindow : LayeredWindow
         GlassConfig g = GlassConfigProvider?.Invoke() ?? new GlassConfig();
         float transmission = TransmissionProvider?.Invoke() ?? Math.Clamp(g.Transmission, 0f, 1f);
 
-        // 以 Dock 的 80 逻辑像素高为基准，把"边缘光学"的尺寸换算到这张卡片上。
-        (float bandV, float amountV) = g.EdgeFor(panel.Height / MathF.Max(Scale, 0.5f));
-
-        // 模糊半径也要跟着放大一点：同样的模糊量在 80px 高的条上是"磨砂"，
-        // 摊到 900px 的卡片上只算"轻微失焦"，背景细节全留着，读起来像半透明板而不是玻璃。
-        // 1.0 → 1.7，够把细节吃掉又不至于糊成一团色块。
+        // Match the effective band after the shader caps it against the Dock height.
+        float dockHeight = DockGeometryProvider?.Invoke().Height ?? 80f;
+        float band = MathF.Min(g.RefractBand, dockHeight * 0.275f);
 
         var req = new RenderRequest
         {
@@ -813,16 +779,10 @@ internal sealed class LaunchpadWindow : LayeredWindow
             Radius = PanelRadius,
             // 外阴影在启动台上是负分：面板后面就是活的桌面，一圈黑晕压上去
             // 只会把玻璃和桌面之间隔出一条"墙缝"，看着像贴了一张卡片。
-            // Dock 需要那圈影子是因为它浮在壁纸上；这里整块面板已经铺满视野，
-            // 边缘靠边光就能立住，所以直接传 0（着色器里 sd>0 的区域 alpha = 0）。
             ShadowExtent = 0f,
-            // 下面这一整组与 DockApp 里那份逐项相同（docs/03-验证记录.md 三十二节有对账表）。
-            // 例外是阴影（上面已归零）与折射带/折射量：见 GlassConfig.EdgeFor 里的尺寸说明。
             Shadow = 0f,
-            // 折射带只做很轻的尺寸补偿：带子一旦跟着高度放大，半面玻璃都在位移，
-            // 玻璃里的背景和外面桌面就对不上（用户说的"透明的背景是错位的"）。
-            RefractBand = g.EnableRefraction ? bandV * Scale : 0f,
-            RefractAmount = g.EnableRefraction ? amountV * Scale : 0f,
+            RefractBand = g.EnableRefraction ? band * Scale : 0f,
+            RefractAmount = g.EnableRefraction ? g.RefractAmount * Scale : 0f,
             Dispersion = g.EnableRefraction ? g.Dispersion : 0f,
             Bulge = g.Bulge,
             RimIntensity = g.RimIntensity,
@@ -845,26 +805,8 @@ internal sealed class LaunchpadWindow : LayeredWindow
             // 在白壁纸上退成"几乎看不见的一层白"，字就同时消失 —— 这也是
             // 用户说"启动台和 dock 栏不是一个效果"的真正原因。
             Smoke = g.Smoke,
-            // Match Dock blur; only explicit diagnostic overrides change it.
-            BlurStep = g.BlurStep * (1f - 0.34f * transmission) * Scale * LaunchBlurK,
+            BlurStep = g.BlurStep * (1f - 0.34f * transmission) * Scale,
             Transmission = transmission,
-            AlphaPull = LaunchAlphaPull,
-            // 默认与 Dock 一样关闭压平，保留背景颜色和对比度。
-            Lift = LaunchLift,
-            // 门控：白壁纸才压平。暗色壁纸上这条整条失效。
-            // 显式设了 LG_LP_LIFT 就当作强制开启（不看环境亮度），方便现场对比：
-            // 桌面上压着一个巨大的深色窗口时，整屏平均会被拉低，这时候要能硬开。
-            EnvLuma = Environment.GetEnvironmentVariable("LG_LP_LIFT") is not null ? 1f : _envLuma,
-            // 边光 / 贴壁高光 / 边缘 alpha 加厚，全部由这一个权重收掉。
-            BorderCut = 1f - LaunchBorder,
-            // 没有亮线之后，面板会薄得像一张贴纸。厚度感交给内侧那条压暗带：
-            // 它只压暗最外面 ~16px 一点点，不画线、不带颜色，看起来是"玻璃有壁厚"。
-            WallThickness = LaunchWallThickness,
-            // 边缘羽化归零。上一版给了 18px 渐隐，想让玻璃"融"进桌面，结果适得其反：
-            // 玻璃边缘淡下去之后，下面那层**矩形的内容贴图**反而露了出来 ——
-            // 用户看到的就是"圆角外面还套着一个直角框"。边界现在由圆角一刀切干净，
-            // 内容层在重建时也按同一个圆角裁掉了（见 RebuildContent）。
-            EdgeFade = 0f,
             BodyR = g.BodyR,
             BodyG = g.BodyG,
             BodyB = g.BodyB,

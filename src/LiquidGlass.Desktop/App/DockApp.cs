@@ -4697,6 +4697,7 @@ internal sealed class DockApp : IDisposable
             _launchpad.ShaderSource = _shaderSource;
             _launchpad.GlassConfigProvider = () => _config.Glass;
             _launchpad.TransmissionProvider = () => EffectiveTransmission(_config.Glass);
+            _launchpad.DockGeometryProvider = () => (_barH / _scale, _radius / _scale);
             // 面板无论从哪个入口关掉，都要把 Dock 的背景解冻（见 OpenLaunchpad 里的说明）
             // 面板不管从哪个入口关（Esc / 点空白 / × / 点 Dock 图标），都在这里收口：
             // 解冻 + 接下来 2 秒强制逐帧比像素（见 DesktopSampler.ForceCompareFor）。
